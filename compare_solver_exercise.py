@@ -85,7 +85,7 @@ if __name__ == "__main__":
     if start is not None and route[0] != start:
         # rotate to put the start in front
         idx = route.index(start)
-        route = route[-idx:] + route[:-idx]
+        route = route[idx:] + route[:idx]
 
     if None not in route:
         print(route)
