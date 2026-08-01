@@ -15,28 +15,85 @@
 ## ------- import packages -------
 import networkx as nx
 import dimod
-# TODO:  Import your sampler
+import itertools
+import logging
 
-# TODO:  Import your Traveling Salesperson QUBO generator
+# Try to import the hybrid sampler; fall back to SimulatedAnnealingSampler if unavailable
+try:
+    from dwave.system import LeapHybridSampler
+    _HYBRID_AVAILABLE = True
+except Exception:
+    from dimod import SimulatedAnnealingSampler
+    _HYBRID_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        "LeapHybridSampler not available; falling back to SimulatedAnnealingSampler for local testing.")
 
 
 def get_qubo(G, lagrange, n):
-    """Returns a dictionary representing a QUBO"""
+    """Returns a dictionary representing a QUBO for the Traveling Salesperson Problem.
 
-    # TODO:  Add QUBO construction here
+    Variables are indexed as (city, time) where city in 0..n-1 and time in 0..n-1.
+    The QUBO includes:
+      - path length objective: sum_t sum_{u!=v} w_uv * x_{u,t} x_{v,t+1}
+      - penalty that each city appears exactly once: lagrange*(sum_t x_{v,t} - 1)^2
+      - penalty that each time slot has exactly one city: lagrange*(sum_v x_{v,t} - 1)^2
 
+    Returns Q (dict) and offset (float).
+    """
+    Q = {}
+
+    def add_qubo(i, j, value):
+        # Ensure key ordering (dimod expects consistent keys for QUBO dicts)
+        key = (i, j) if i <= j else (j, i)
+        if key in Q:
+            Q[key] += value
+        else:
+            Q[key] = value
+
+    # Objective: travel cost
+    # For each undirected edge (u, v) we add cost for both orientations
+    for u, v, data in G.edges(data=True):
+        w = data.get("weight", 1)
+        for t in range(n):
+            tnext = (t + 1) % n
+            add_qubo((u, t), (v, tnext), w)
+            add_qubo((v, t), (u, tnext), w)
+
+    # Penalty terms
+    # Each city appears exactly once (across times): (sum_t x_{v,t} - 1)^2
+    # Each time has exactly one city (across cities): (sum_v x_{v,t} - 1)^2
+    # After expansion, linear contributions are -lagrange per constraint per variable
+    # and quadratic +2*lagrange for variable pairs in the same constraint.
+
+    # Linear contribution: each variable participates in two constraints -> -2 * lagrange
+    for city in range(n):
+        for t in range(n):
+            add_qubo((city, t), (city, t), -2 * lagrange)
+
+    # Off-diagonal penalty: pairs of different times for the same city
+    for city in range(n):
+        for t1, t2 in itertools.combinations(range(n), 2):
+            add_qubo((city, t1), (city, t2), 2 * lagrange)
+
+    # Off-diagonal penalty: pairs of different cities for the same time
+    for t in range(n):
+        for c1, c2 in itertools.combinations(range(n), 2):
+            add_qubo((c1, t), (c2, t), 2 * lagrange)
+
+    # The constant offset from expanding both sets of constraints is 2 * n * lagrange
     offset = 2 * n * lagrange
 
     return Q, offset
 
 
 def get_sampler():
-    """Returns a sampler"""
-
-    # TODO: Enter your sampler here
-
-
-
+    """Returns a sampler. Prefer a hybrid sampler (LeapHybridSampler) if available,
+    otherwise return a SimulatedAnnealingSampler for local testing.
+    """
+    if _HYBRID_AVAILABLE:
+        sampler = LeapHybridSampler()
+    else:
+        sampler = SimulatedAnnealingSampler()
     return sampler
 
 
@@ -72,7 +129,14 @@ if __name__ == "__main__":
     Q, offset = get_qubo(G, lagrange, n)
     sampler = get_sampler()
     bqm = dimod.BinaryQuadraticModel.from_qubo(Q, offset=offset)
-    response = sampler.sample(bqm, label="Training - TSP")
+
+    # label indicates intent; hybrid sampler may accept it, local samplers will ignore unknown kwargs
+    sample_kwargs = {"label": "Training - TSP (hybrid)"}
+    try:
+        response = sampler.sample(bqm, **sample_kwargs)
+    except TypeError:
+        # some samplers (older dimod) may not accept label kwarg
+        response = sampler.sample(bqm)
 
     start = None
     sample = response.first.sample
