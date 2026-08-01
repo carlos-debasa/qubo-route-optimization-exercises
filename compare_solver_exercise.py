@@ -15,27 +15,74 @@
 ## ------- import packages -------
 import networkx as nx
 import dimod
-# TODO:  Import your sampler
-
-# TODO:  Import your Traveling Salesperson QUBO generator
+import itertools
+from dimod import SimulatedAnnealingSampler
 
 
 def get_qubo(G, lagrange, n):
-    """Returns a dictionary representing a QUBO"""
+    """Returns a dictionary representing a QUBO for the Traveling Salesperson Problem.
 
-    # TODO:  Add QUBO construction here
+    Variables are indexed as (city, time) where city in 0..n-1 and time in 0..n-1.
+    The QUBO includes:
+      - path length objective: sum_t sum_{u!=v} w_uv * x_{u,t} x_{v,t+1}
+      - penalty that each city appears exactly once: lagrange*(sum_t x_{v,t} - 1)^2
+      - penalty that each time slot has exactly one city: lagrange*(sum_v x_{v,t} - 1)^2
 
+    Returns Q (dict) and offset (float).
+    """
+    Q = {}
+
+    def add_qubo(i, j, value):
+        key = (i, j)
+        # keep keys ordered for consistency
+        if key in Q:
+            Q[key] += value
+        else:
+            Q[key] = value
+
+    # Objective: travel cost
+    # For each ordered pair u != v, and each time t, add weight * x_{u,t} x_{v,t+1}
+    for u, v, data in G.edges(data=True):
+        w = data.get("weight", 1)
+        # add both orientations since the route is ordered (u at t then v at t+1, and v at t then u at t+1)
+        for t in range(n):
+            tnext = (t + 1) % n
+            add_qubo((u, t), (v, tnext), w)
+            add_qubo((v, t), (u, tnext), w)
+
+    # Penalty terms
+    # Each city appears exactly once (across times): (sum_t x_{v,t} - 1)^2
+    # Each time has exactly one city (across cities): (sum_v x_{v,t} - 1)^2
+    # Expanding these produces linear and quadratic terms. The constant offsets are collected separately.
+
+    # Linear contribution from constraints and quadratic between variables in the same constraint
+    # After expansion, for each variable the linear contribution from one constraint is -lagrange,
+    # and each pair in the same constraint gets +2*lagrange.
+
+    # Add linear -2*lagrange for each variable (since there are two constraints per variable)
+    for city in range(n):
+        for t in range(n):
+            add_qubo((city, t), (city, t), -2 * lagrange)
+
+    # Off-diagonal penalty: pairs of different times for the same city
+    for city in range(n):
+        for t1, t2 in itertools.combinations(range(n), 2):
+            add_qubo((city, t1), (city, t2), 2 * lagrange)
+
+    # Off-diagonal penalty: pairs of different cities for the same time
+    for t in range(n):
+        for c1, c2 in itertools.combinations(range(n), 2):
+            add_qubo((c1, t), (c2, t), 2 * lagrange)
+
+    # The constant offset from expanding both sets of constraints is 2 * n * lagrange
     offset = 2 * n * lagrange
 
     return Q, offset
 
 
 def get_sampler():
-    """Returns a sampler"""
-
-    # TODO: Enter your sampler here
-
-
+    """Returns a classical sampler (Simulated Annealing)."""
+    sampler = SimulatedAnnealingSampler()
     return sampler
 
 
